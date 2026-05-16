@@ -1,364 +1,210 @@
-# 01 — WGBS: Whole-Genome Bisulfite Sequencing
+# Analysis 1 — WGBS Bisulfite Sequencing Pipeline
 
-This section covers the conceptual and methodological foundations of WGBS-based DNA methylation analysis. It is based on the Galaxy training tutorial, the introductory slides on DNA methylation, and the reference paper by Lin et al. (2015). No code is run here — this is the reading and understanding component of the assignment.
+Whole-genome bisulfite sequencing (WGBS) analysis of breast cancer and normal breast tissue methylomes. Data sourced from **Lin et al. (2015)**. Pipeline executed on **Galaxy Europe** (`usegalaxy.eu`) following the Galaxy Training Network methylation-seq tutorial.
 
 ---
 
 ## Table of Contents
 
-1. [What Is DNA Methylation?](#1-what-is-dna-methylation)
-2. [How Bisulfite Conversion Works](#2-how-bisulfite-conversion-works)
-3. [CpG Sites and Their Biological Significance](#3-cpg-sites-and-their-biological-significance)
-4. [WGBS vs. Array-Based Methods](#4-wgbs-vs-array-based-methods)
-5. [The Galaxy WGBS Pipeline — Step by Step](#5-the-galaxy-wgbs-pipeline--step-by-step)
-6. [Reference Paper: Lin et al. (2015)](#6-reference-paper-lin-et-al-2015)
-7. [Images to Download from the Galaxy Tutorial](#7-images-to-download-from-the-galaxy-tutorial)
+- [Biological Rationale](#biological-rationale)
+- [Dataset](#dataset)
+- [Pipeline Steps](#pipeline-steps)
+  - [Step 1 — Quality Control (Falco)](#step-1--quality-control-falco)
+  - [Step 2 — Bisulfite-Aware Alignment (bwameth)](#step-2--bisulfite-aware-alignment-bwameth)
+  - [Step 3 — Methylation Extraction and Bias Assessment (MethylDackel)](#step-3--methylation-extraction-and-bias-assessment-methyldackel)
+  - [Step 4 — Methylation Profiling (computeMatrix + plotProfile)](#step-4--methylation-profiling-computematrix--plotprofile)
+  - [Step 5 — DMR Detection (Metilene)](#step-5--dmr-detection-metilene)
+- [Summary of Findings](#summary-of-findings)
+- [References](#references)
 
 ---
 
-## 1. What Is DNA Methylation?
+## Biological Rationale
 
-DNA methylation is an epigenetic modification — a chemical change to DNA that affects gene expression without altering the underlying nucleotide sequence. In mammals, it almost always occurs at **cytosine** residues in the context of a **CpG dinucleotide** (a cytosine immediately followed by a guanine on the same strand).
+### DNA Methylation in Breast Cancer
 
-A methyl group (–CH₃) is added to the fifth carbon of cytosine, converting it to **5-methylcytosine (5mC)**. This reaction is catalysed by a family of enzymes called **DNA methyltransferases (DNMTs)**:
+DNA methylation — the covalent addition of a methyl group to cytosine at CpG dinucleotides — is among the most well-characterised epigenetic modifications in cancer biology. In normal somatic cells, promoter CpG islands are maintained in an unmethylated state, permitting transcription factor access and gene expression. During oncogenesis, this equilibrium is disrupted in two coordinated but opposing ways:
 
-- **DNMT3A and DNMT3B** establish *de novo* methylation patterns during development
-- **DNMT1** maintains existing methylation patterns during cell division by methylating the newly synthesised strand after replication
+1. **Focal hypermethylation** at promoter CpG islands silences tumour suppressor genes, replacing genetic mutation as a mechanism of loss of function.
+2. **Global hypomethylation** across gene bodies, repetitive elements, and large partially methylated domains (PMDs) destabilises the genome and drives aberrant gene activation.
 
-### Why does it matter?
+Lin et al. (2015) applied whole-genome bisulfite sequencing to characterise these changes at single-base resolution across normal breast tissue, fibroadenoma, invasive ductal carcinomas, and the MCF7 cell line. Their hierarchical clustering of hypomethylated regions (HMRs) identified tumour-specific methylation clusters and differentially methylated enhancers, with downstream effects on gene expression and X-chromosome inactivation.
 
-DNA methylation is not random. It is a regulatory layer that controls which genes are expressed in which cell types, when, and at what level:
+### Why Bisulfite Sequencing?
 
-- **Promoter methylation** generally silences gene expression by blocking transcription factor binding or recruiting repressor complexes
-- **Gene body methylation** is often positively correlated with gene expression — a counterintuitive pattern that reflects active transcription
-- **Enhancer methylation** can disrupt long-range regulatory interactions between enhancers and their target genes
+Conventional DNA sequencing cannot distinguish methylated cytosine (5mC) from unmethylated cytosine — both read as C. Bisulfite treatment resolves this ambiguity through a chemical conversion:
 
-Methylation patterns are largely cell-type-specific and are reprogrammed at key developmental stages (fertilisation, gametogenesis). In cancer and aging, these patterns become dysregulated — some regions gain aberrant methylation (hypermethylation), silencing tumour suppressor genes; others lose methylation (hypomethylation), destabilising repeat elements and activating oncogenes.
+- **Unmethylated cytosines** → deaminated to uracil → sequenced as **T**
+- **Methylated cytosines** → chemically protected → sequenced as **C**
 
----
-
-## 2. How Bisulfite Conversion Works
-
-Bisulfite sequencing is the gold-standard method for detecting methylation at single-base resolution. The key chemical step exploits a difference in how methylated and unmethylated cytosines react with sodium bisulfite:
-
-| Cytosine state | Reaction with bisulfite | Read in sequencing |
-|---|---|---|
-| **Unmethylated C** | Deaminated → uracil (U) | Sequenced as **T** |
-| **Methylated C (5mC)** | Protected — no reaction | Sequenced as **C** |
-
-After bisulfite treatment the DNA is amplified and sequenced. When you align the reads to a reference genome and look at any CpG position:
-
-- A **C** in the read → that cytosine was **methylated** in the original DNA
-- A **T** in the read → that cytosine was **unmethylated** in the original DNA
-
-The **percent methylation** at a CpG site is simply:
-
-```
-methylation % = (reads with C at that position) / (total reads covering that position) × 100
-```
-
-### Important caveats
-
-**Bisulfite conversion is destructive.** It degrades approximately 80–95% of input DNA, so library preparation requires special kits and sufficient starting material. Converted DNA is also no longer double-stranded in the traditional sense — the two strands are no longer complementary after conversion, which complicates alignment.
-
-**Incomplete conversion** is a known source of false positives. Any unmethylated C that fails to convert will appear as a spurious methylation call. Conversion efficiency is typically assessed by including a spike-in DNA (often lambda phage, which is grown in methylase-negative bacteria and should have 0% methylation) and measuring how many of its Cs incorrectly appear as methylated. Acceptable conversion efficiency is typically >99%.
-
-**The per-base sequence quality plots in FastQC will look abnormal** for bisulfite-converted data — an unusual T enrichment is expected and is actually a sign of successful conversion, not a quality failure.
+Comparing C vs T calls at each CpG position in aligned reads allows genome-wide reconstruction of the methylation state at single-base resolution.
 
 ---
 
-## 3. CpG Sites and Their Biological Significance
+## Dataset
 
-A **CpG site** is a cytosine followed by a guanine in the 5′→3′ direction (the "p" refers to the phosphodiester bond between them). Although CpGs are statistically underrepresented in mammalian genomes (because methylated cytosines are mutation-prone and convert to thymines over evolutionary time), they cluster in regions called **CpG islands**.
+**Source:** Lin et al. (2015) — ArrayExpress accession **E-MTAB-2014**
+**Reference genome:** hg38 (GRCh38)
+**Tutorial subset:** Chromosome 6 reads (for computational feasibility on shared Galaxy servers)
 
-**CpG islands** are regions roughly 200–3,000 bp long with elevated CpG density and high GC content. About 70% of human gene promoters are associated with a CpG island. These islands are usually unmethylated in normal cells, allowing the associated genes to be expressed. Silencing by methylation of CpG islands — particularly at tumour suppressor gene promoters — is one of the hallmarks of cancer epigenetics.
-
-**CpG context types:**
-
-- **CpG** — the primary site of methylation in mammals; the focus of most methylation analyses
-- **CHG and CHH** (where H = A, T, or C) — methylated in plants and some stem cells; generally absent in somatic mammalian cells. Their presence in WGBS data can be used to assess incomplete bisulfite conversion
-
----
-
-## 4. WGBS vs. Array-Based Methods
-
-The two approaches in this assignment represent opposite ends of the cost/resolution/coverage trade-off:
-
-| Feature | WGBS | EPIC Array (Illumina) |
-|---|---|---|
-| **Coverage** | Every cytosine in the genome (~28M CpGs in humans) | ~935,000 pre-selected CpG sites |
-| **Resolution** | Single-base, genome-wide | Pre-defined loci only |
-| **Cost** | High (~$300–1000+ per sample) | Lower (~$100–200 per sample) |
-| **Data size** | Very large (50–100 GB per sample raw) | Manageable (intensity files ~10 MB) |
-| **Bias** | Low — captures all CpGs including novel/intergenic | Array design bias — misses unannotated regions |
-| **CpG context** | CpG, CHG, CHH all captured | CpG only |
-| **Typical use** | Discovery, reference methylomes, structural features (HMRs, PMDs) | Population studies, biomarkers, aging clocks, clinical applications |
-| **Alignment complexity** | High — bisulfite conversion complicates alignment | None — probes hybridise directly |
-| **Epigenetic clocks** | Not typically used | The basis of all current aging clocks (Horvath, Hannum, PhenoAge, etc.) |
-
-**Why do epigenetic clocks use arrays and not WGBS?**
-
-Aging clocks were trained on array data because arrays have been applied to thousands of samples in large epidemiological cohorts, providing the statistical power needed to build and validate predictive models. WGBS is more expensive and complex, so it has been applied to far fewer samples. Additionally, clock CpGs are pre-specified loci, which arrays capture reliably and reproducibly across labs — WGBS coverage at any individual CpG depends on sequencing depth and can be incomplete in low-coverage experiments.
-
-WGBS, on the other hand, is indispensable for discovering structural methylation features — hypomethylated regions (HMRs), partially methylated domains (PMDs), allele-specific methylation, and methylation in repetitive or novel genomic regions that are entirely absent from arrays.
+| Sample ID | Tissue Type | Experimental Group |
+|-----------|-------------|-------------------|
+| NB1 | Normal breast | Control |
+| NB2 | Normal breast | Control |
+| BT089 | Invasive ductal carcinoma | Case |
+| BT126 | Invasive ductal carcinoma | Case |
+| BT198 | Invasive ductal carcinoma | Case |
+| MCF7 | Breast cancer cell line | Case |
 
 ---
 
-## 5. The Galaxy WGBS Pipeline — Step by Step
+## Pipeline Steps
 
-The Galaxy tutorial walks through a real WGBS pipeline applied to human breast tissue data. The tools and steps are described below.
+### Step 1 — Quality Control (Falco)
 
-### Overview
+**Tool:** Falco v1.2.4
+**Input:** Raw FASTQ files (`subset_1.fastq`, `subset_2.fastq`)
+**Purpose:** Assess raw read quality and verify successful bisulfite conversion
 
-```
-Raw reads (FASTQ)
-       │
-       ▼
- Step 1: Quality Control (FastQC / Falco)
-       │
-       ▼
- Step 2: Read Trimming (Trim Galore)
-       │
-       ▼
- Step 3: Alignment to Reference Genome (bwameth)
-       │
-       ▼
- Step 4: Methylation Extraction (MethylDackel)
-       │
-       ▼
- Step 5: Visualisation (DeepTools, bigWig tracks)
-       │
-       ▼
- Step 6: Differential Methylation Analysis (metilene)
-```
+Falco (a computationally efficient FastQC alternative) evaluates per-base quality scores, GC content, sequence length distribution, and — critically for bisulfite data — per-base sequence composition.
+
+In a correctly treated bisulfite library, the per-base composition plot deviates markedly from the expected uniform distribution. Cytosine (C) is depleted to near zero, while thymine (T) is elevated to approximately 50%. This pattern is not a quality defect but the expected and required signature of complete bisulfite conversion, confirming that unmethylated cytosines have been fully converted prior to sequencing.
+
+**Figure 01 — Per-base sequence content, Read 1:**
+
+![QC Read 1](./results/01_qc_read1_sequence_content.png)
+
+*Per-base nucleotide composition for `subset_1.fastq`. Cytosine frequency approaches zero and thymine rises to ~50% across all positions, confirming complete bisulfite conversion of the forward read.*
+
+**Figure 02 — Per-base sequence content, Read 2:**
+
+![QC Read 2](./results/02_qc_read2_sequence_content.png)
+
+*Corresponding composition for `subset_2.fastq`. The same conversion signature is observed in the reverse read, confirming library-wide bisulfite treatment.*
 
 ---
 
-### Step 1: Quality Control — FastQC / Falco
+### Step 2 — Bisulfite-Aware Alignment (bwameth)
 
-**Tool:** FastQC or Falco (a faster drop-in replacement)
+**Tool:** bwameth v0.2.7
+**Reference:** hg38
+**Purpose:** Align bisulfite-converted reads to the reference genome while accounting for C→T and G→A conversions
 
-**Purpose:** Assess the raw read quality before any processing.
+Standard short-read aligners (BWA-MEM, Bowtie2) cannot accurately align bisulfite reads because C→T conversion introduces apparent mismatches against an unconverted reference, dramatically reducing mapping efficiency and introducing systematic alignment bias.
 
-**What to look at:**
-- **Per-base sequence quality** — should be high (green) across the read length; drop-off at the 3′ end is normal
-- **Per-base sequence content** — *will appear as a failure* in bisulfite data because the T:C ratio is heavily skewed due to conversion. This is expected and not a real quality problem
-- **Adapter content** — identifies sequencing adapters that must be trimmed
-- **Duplication levels** — can be inflated in WGBS if library complexity is low
+bwameth addresses this by performing in-memory 3-letter conversion of the reference genome (C→T on the forward strand; G→A on the reverse strand) and aligning reads accordingly, then reporting alignments in standard BAM format with full methylation context preserved. This approach handles all four possible bisulfite strand orientations (OT, OB, CTOT, CTOB) without requiring separate genome indices.
 
-> **Galaxy tutorial screenshot to save:** the FastQC per-base sequence content plot showing the characteristic T-skew of bisulfite-converted data. This is the most visually distinctive result of the QC step.
+The output is a coordinate-sorted BAM file per sample, which is passed to MethylDackel for methylation extraction.
 
 ---
 
-### Step 2: Read Trimming — Trim Galore
+### Step 3 — Methylation Extraction and Bias Assessment (MethylDackel)
 
-**Tool:** Trim Galore (wraps Cutadapt + FastQC)
+**Tool:** MethylDackel v0.5.2
+**Input:** Sorted BAM files from bwameth
+**Output:** bedGraph files with per-CpG methylation percentage and read coverage
+**Purpose:** Extract per-CpG methylation calls and assess positional methylation bias
 
-**Purpose:** Remove adapter sequences and low-quality bases from the ends of reads.
+MethylDackel traverses each aligned read in the BAM file and, at each CpG position, records whether the cytosine was retained (methylated) or converted to thymine (unmethylated). It outputs a bedGraph-format file with columns: chromosome, start, end, methylation percentage, methylated read count, and unmethylated read count.
 
-**What it does:**
-- Removes Illumina adapter sequences that appear when the read length exceeds the insert size
-- Trims low-quality 3′ bases (default quality cutoff Phred 20)
-- Re-runs FastQC on trimmed reads to confirm improvement
+**Methylation Bias Assessment (`mbias`):**
+Some bisulfite library preparation protocols introduce positional bias — artificially elevated or depressed methylation calls at the 5′ or 3′ ends of reads — due to end-repair artefacts or incomplete conversion at read termini. The `mbias` function plots average CpG methylation percentage as a function of read position to detect such biases. If present, affected positions are excluded from methylation extraction.
 
-**Why this matters for bisulfite data:** The 5′ ends of reads can show methylation bias (m-bias) — artificially inflated or deflated methylation levels due to random priming artefacts in library preparation. Trim Galore's `--clip_R1` and `--clip_R2` options allow trimming of these biased positions.
+**Figure 03 — Methylation bias, original top strand:**
 
----
+![Methylation Bias](./results/03_methylation_bias_top_strand.png)
 
-### Step 3: Alignment — bwameth
-
-**Tool:** bwameth (bisulfite-aware aligner using BWA-MEM)
-
-**Purpose:** Map the bisulfite-converted reads back to the reference genome.
-
-**Why alignment is hard for bisulfite data:**
-
-Standard aligners assume that C in the read should match C in the reference. After bisulfite conversion, unmethylated Cs become Ts — so a read that originated from an unmethylated CpG will have a T where the reference has a C. A naive aligner would either fail to map this read or report it as a mismatch.
-
-Bisulfite-aware aligners solve this by converting all Cs in both the reads and the reference to Ts during the alignment step (in silico), then reporting the original sequence. This allows the aligner to place reads correctly while preserving the C/T distinction needed to call methylation.
-
-**What bwameth produces:**
-- A BAM file of aligned reads
-- An alignment rate (typically 70–85% for WGBS, lower than regular sequencing due to the reduced sequence complexity after conversion)
-
-> **Galaxy tutorial screenshot to save:** the bwameth alignment statistics output showing mapping rate and read counts.
+*MethylDackel mbias output for the original top strand across paired reads. CpG methylation is stable at 70–75% across all read positions with no significant positional trend at either read terminus. This confirms the absence of end-repair bias and indicates that no positional trimming is required prior to methylation extraction.*
 
 ---
 
-### Step 4: Methylation Extraction — MethylDackel
+### Step 4 — Methylation Profiling (computeMatrix + plotProfile)
 
-**Tool:** MethylDackel (formerly PileOMeth)
+**Tools:** computeMatrix v3.5.4, plotProfile v3.5.4
+**Input:** BigWig methylation tracks, CpG island BED annotations
+**Purpose:** Visualise average methylation levels relative to genomic features
 
-**Purpose:** Extract per-CpG methylation calls from the aligned BAM file.
+computeMatrix calculates per-base methylation signal in defined windows around genomic features — here, CpG islands and their associated transcription start sites (TSS). plotProfile then renders the average methylation curve across all features in the reference BED file.
 
-**What it does:**
+This approach reveals the global relationship between genomic context and methylation state, and allows direct comparison across samples.
 
-For every CpG position in the genome covered by at least one read, MethylDackel counts:
-- How many reads show a C at that position (methylated)
-- How many reads show a T at that position (unmethylated)
+**Figure 04 — Methylation profile, single sample:**
 
-It calculates the methylation fraction: `C / (C + T)`.
+![Methylation Profile Single Sample](./results/04_methylation_profile_single_sample.png)
 
-**MethylDackel also detects m-bias** — it plots methylation level as a function of position within the read. If the first or last few bases show unusual methylation levels (especially at read 2's 5′ end in paired-end data), those positions can be excluded from the final extraction.
+*Average methylation around CpG islands for the subset sample. The characteristic dip centred on the TSS reflects the biologically required hypomethylation of active promoter CpG islands. Unmethylated CpG island promoters are permissive for transcription factor binding; their methylation leads to stable gene silencing.*
 
-**Output format:** A bedGraph file with one row per covered CpG:
-```
-chromosome   start   end   methylation_fraction
-chr1         10468   10469   0.85
-chr1         10470   10471   0.23
-```
+**Figure 05 — Methylation profile, all six samples:**
 
-> **Galaxy tutorial screenshot to save:** the MethylDackel m-bias plot, which shows per-position methylation across the read. Flat is ideal; sloping ends indicate bias that needs to be clipped.
+![Methylation Profile All Samples](./results/05_methylation_profile_all_samples.png)
+
+*plotProfile output across all six samples (NB1, NB2, BT089, BT126, BT198, MCF7). The TSS dip is present and deep in normal breast tissue (NB1, NB2), reflecting intact promoter hypomethylation. In cancer samples (BT089, BT126, BT198, MCF7), the dip is markedly attenuated — indicating aberrant CpG island promoter hypermethylation consistent with the tumour suppressor gene silencing described in Lin et al. (2015).*
 
 ---
 
-### Step 5: Visualisation — DeepTools / bigWig
+### Step 5 — DMR Detection (Metilene)
 
-**Tool:** DeepTools (`bamCoverage`, `computeMatrix`, `plotProfile`)
+**Tool:** Metilene v0.2.6.1
+**Comparison:** Group 1 = normal breast (NB1, NB2) vs Group 2 = invasive ductal carcinoma (BT198)
+**Purpose:** Identify genomic regions with statistically significant differential methylation between groups
 
-**Purpose:** Visualise genome-wide methylation patterns, particularly around functionally important features like transcription start sites (TSS).
+Metilene applies a binary segmentation algorithm to identify contiguous CpG-dense genomic regions where the mean methylation level differs significantly between the two sample groups. Each reported DMR includes: genomic coordinates, mean methylation per group, methylation difference, q-value (Benjamini–Hochberg adjusted), CpG count, and region length in base pairs.
 
-**What the tutorial does:**
+**Figure 06 — DMR methylation difference distribution:**
 
-1. Converts the MethylDackel bedGraph output to bigWig format for IGV or genome browser visualisation
-2. Uses `computeMatrix` to centre methylation signal on all TSS positions in the genome
-3. Uses `plotProfile` to show the average methylation level at TSS across all genes
+![DMR Methylation Difference Distribution](./results/06_dmr_methylation_difference_distribution.png)
 
-**Expected result:** A characteristic "valley" of low methylation centred on the TSS, flanked by higher methylation. This is the signature of active promoter CpG islands — they are unmethylated, allowing transcription factor access.
+*Distribution of mean methylation differences (cancer − normal) across all detected DMRs. The distribution is left-skewed, with more DMRs showing negative differences (hypomethylation in cancer relative to normal) than positive ones. This confirms that global hypomethylation is the dominant methylation change in invasive ductal carcinoma, consistent with the PMD hypomethylation and HMR expansion described in Lin et al. (2015). A smaller right-sided peak of hypermethylated DMRs is also present, representing focal promoter hypermethylation events.*
 
-> **Galaxy tutorial screenshot to save:** the `plotProfile` output showing the TSS methylation valley. This is one of the most biologically interpretable figures in the tutorial.
+**Figure 07 — DMR length distribution (nucleotides):**
 
----
+![DMR Length Nucleotides](./results/07_dmr_length_nucleotides.png)
 
-### Step 6: Differential Methylation — metilene
+*Distribution of DMR lengths in base pairs. Most DMRs fall in the kilobase range, consistent with the kilobase-scale HMR expansions and contractions reported in the Lin et al. dataset.*
 
-**Tool:** metilene
+**Figure 08 — DMR length distribution (CpG count):**
 
-**Purpose:** Identify differentially methylated regions (DMRs) between two groups of samples (e.g., normal vs. tumour).
+![DMR Length CpG](./results/08_dmr_length_cpg_count.png)
 
-**What it does:**
+*Distribution of DMR lengths measured by number of CpG sites spanned. The CpG-count distribution tracks closely with the nucleotide-length distribution, as expected for regions of approximately uniform CpG density.*
 
-Rather than testing individual CpGs, metilene segments the genome into regions and tests whether consecutive CpGs in a region are consistently more or less methylated in one group versus another. This regional approach is preferred because:
-- Individual CpG tests produce millions of p-values with severe multiple-testing burden
-- Biologically meaningful methylation changes tend to span regions of dozens to hundreds of CpGs, not isolated sites
-- Regional tests are more robust to incomplete coverage at individual CpGs
+**Figure 09 — Mean methylation difference vs q-value:**
 
-**Output:** A BED file of DMRs with mean methylation difference, q-value, number of CpGs, and genomic coordinates.
+![DMR QValue](./results/09_dmr_qvalue_vs_difference.png)
 
-> **Galaxy tutorial screenshot to save:** the metilene output summary plot showing DMR methylation differences, DMR lengths, and the scatter of mean group methylation values.
+*Scatter plot of mean methylation difference vs −log₁₀(q-value) for all detected DMRs. The most significantly differentially methylated regions — predominantly hypomethylated — reach q-values below 1×10⁻¹⁰⁰, reflecting the magnitude and consistency of methylation loss across cancer samples at these loci.*
 
----
+**Figure 10 — Group 1 vs Group 2 mean methylation:**
 
-## 6. Reference Paper: Lin et al. (2015)
+![DMR Group Comparison](./results/10_dmr_group1_vs_group2_methylation.png)
 
-> Lin I-H, Chen D-T, Chang Y-F, Lee Y-L, Su C-H, Cheng C, et al. (2015). *Hierarchical Clustering of Breast Cancer Methylomes Revealed Differentially Methylated and Expressed Breast Cancer Genes.* PLOS ONE 10(2): e0118453. https://doi.org/10.1371/journal.pone.0118453
+*Mean methylation in normal breast (Group 1, x-axis) vs invasive ductal carcinoma (Group 2, y-axis) at each DMR. Deviation from the diagonal represents differential methylation. Points above the diagonal represent hypermethylation in cancer; points below represent hypomethylation in cancer. The predominance of points below the diagonal reinforces the hypomethylation-dominant pattern.*
 
-### Study Design
+**Figure 11 — DMR length in nucleotides vs CpG count:**
 
-The authors applied WGBS to seven breast tissue samples representing a progression from normal to cancerous tissue:
+![DMR Length nt vs CpG](./results/11_dmr_length_nt_vs_cpg.png)
 
-| Sample | Type |
-|---|---|
-| Normal breast tissue (×2) | Healthy control |
-| Fibroadenoma | Benign tumour |
-| Invasive ductal carcinoma (×2) | Malignant primary tumour |
-| MCF7 | ER+ breast cancer cell line |
-| HCC1954 | HER2+ breast cancer cell line |
-
-This design allows the methylome to be tracked across a disease continuum, from normal to benign to malignant to established cancer cell lines.
-
-### Key Concepts
-
-**Hypomethylated Regions (HMRs)**
-
-The authors defined HMRs as contiguous stretches of CpGs with consistently low methylation (below a threshold). They found that the distribution of HMRs — their number, size, and location — changes substantially in cancer:
-
-- Normal cells have a stable set of HMRs at active promoters and enhancers
-- Cancer cells gain new HMRs in regions that are methylated in normal tissue (hypomethylation)
-- Cancer cells also lose HMRs at regions that should be active (hypermethylation)
-
-The size distribution of HMRs ranges from kilobase-scale (corresponding to individual regulatory elements) to megabase-scale.
-
-**Partially Methylated Domains (PMDs)**
-
-PMDs are large genomic regions (typically hundreds of kilobases to megabases) with intermediate, heterogeneous methylation. They are enriched in late-replicating, gene-poor regions of the genome. In cancer, PMDs expand significantly — large regions of the genome that are stably methylated in normal cells become partially demethylated. This is thought to reflect a loss of methylation maintenance fidelity during the rapid cell division of tumour growth.
-
-### Major Findings
-
-**1. Hierarchical clustering of HMRs separates normal from cancer tissue**
-
-When the authors clustered samples by their HMR methylation levels at promoters, intragenic regions, and intergenic regions, normal tissue and cancer samples formed distinct clusters. This demonstrates that the global methylation landscape — not just individual gene promoters — is reorganised in a consistent, tumour-specific pattern.
-
-Eight distinctive HMR clusters were identified at each genomic location. The most biologically important clusters were those showing:
-- Consistently low methylation in all samples (constitutive regulatory elements)
-- Hypomethylation specific to cancer cell lines (MCF7, HCC1954) relative to normal (potential oncogenic activation)
-- Hypermethylation in cancer samples relative to normal (potential tumour suppressor silencing)
-
-**2. Cancer-specific HMRs overlap with known breast cancer regulatory elements**
-
-The cancer-specific hypomethylated clusters were enriched for enhancers active in breast cancer cell lines and for transcription factor binding sites associated with cancer biology (e.g., FOXA1, GATA3 — both known breast cancer transcription factors). This suggests that methylation loss at enhancers may contribute to aberrant activation of breast cancer gene programmes.
-
-**3. Joint methylation–expression analysis identifies candidate genes**
-
-By integrating WGBS methylation data with gene expression data (RNA-seq), the authors identified genes where:
-- Hypermethylation at the promoter in cancer correlates with reduced expression (candidate tumour suppressors silenced by methylation)
-- Hypomethylation at the promoter in cancer correlates with increased expression (candidate oncogenes activated by methylation loss)
-
-These genes included several known breast cancer and ovarian cancer genes, validating the approach, as well as novel candidates.
-
-**4. Aberrant X-chromosome inactivation in breast cancer**
-
-A striking finding was evidence of disrupted X-chromosome inactivation (XCI) in cancer samples. In normal female cells, one X chromosome is inactivated by coating with XIST RNA; the XIST promoter is unmethylated on the inactive X and the gene is expressed. In cancer:
-
-- The XIST promoter was hypermethylated in cancer cell lines → XIST expression was reduced → the inactive X was no longer properly silenced
-- X-linked genes that should be silenced on the inactive X were instead hypomethylated and overexpressed
-- High expression of these X-linked genes in TCGA breast cancer data was associated with significantly worse patient survival
-
-### Relevance to the Galaxy Tutorial
-
-The Galaxy WGBS tutorial uses data derived from this study. The pipeline steps (QC → trimming → alignment → methylation extraction → visualisation → DMR calling) are exactly the steps the Lin et al. authors performed to generate their methylomes. The tutorial makes these steps reproducible for educational purposes using a subset of the data.
+*Bivariate plot of DMR nucleotide length vs CpG count. The positive linear relationship is expected. Deviations from the trend line indicate regions with unusually high CpG density (CpG islands) or unusually sparse CpG density (gene bodies, intergenic regions).*
 
 ---
 
-## 7. Images to Download from the Galaxy Tutorial
+## Summary of Findings
 
-You do not need to run the Galaxy pipeline to include representative figures in this README. Download the following images directly from the Galaxy tutorial page and save them to `01_wgbs/images/`:
+| Step | Key Finding | Biological Interpretation |
+|------|-------------|--------------------------|
+| QC (Falco) | C → ~0%, T → ~50% per base | Complete bisulfite conversion confirmed |
+| Alignment (bwameth) | Successful alignment to hg38 | Bisulfite-aware alignment required for accuracy |
+| Bias (MethylDackel) | Stable 70–75% CpG methylation across all positions | No positional artefact; no trimming required |
+| Profiles (plotProfile) | TSS dip attenuated in cancer vs normal | Aberrant promoter CpG island hypermethylation in cancer |
+| DMRs (Metilene) | Left-skewed difference distribution; q < 1×10⁻¹⁰⁰ for top DMRs | Dominant global hypomethylation in cancer, with focal hypermethylation |
 
-> **Tutorial URL:** https://training.galaxyproject.org/training-material/topics/epigenetics/tutorials/methylation-seq/tutorial.html
-
-### Images to save and their filenames
-
-| Image to find in tutorial | Suggested filename | What it shows |
-|---|---|---|
-| FastQC per-base sequence content plot (bisulfite-converted data) | `fastqc_per_base_content.png` | T-skew caused by bisulfite conversion — the visual signature that conversion worked |
-| Falco / FastQC quality score plot (pre- or post-trimming) | `fastqc_quality_scores.png` | Per-base quality across the read; shows where 3′ trimming is needed |
-| MethylDackel m-bias plot | `methyldackel_mbias.png` | Per-position methylation across read length; flat = good, sloping ends = bias to trim |
-| DeepTools `plotProfile` TSS methylation plot | `deeptools_tss_profile.png` | Average methylation centred on all TSS; the promoter valley is the key biological signal |
-| metilene DMR output summary plot | `metilene_dmr_summary.png` | Distribution of DMR sizes, methylation differences, and q-values |
-
-### How to save them
-
-On the tutorial page, right-click each figure → "Save image as" → save to `01_wgbs/images/` with the filenames above.
-
-Once downloaded, the images will be referenced in the README like this:
-
-```markdown
-![FastQC per-base sequence content](images/fastqc_per_base_content.png)
-```
-
-Place this placeholder section in the README wherever the images should appear — or let me know once you have downloaded them and I can insert the references and captions directly.
+These findings recapitulate the central epigenomic features of breast cancer methylomes described in Lin et al. (2015) and are consistent with the broader cancer epigenomics literature: a landscape of global hypomethylation punctuated by focal promoter hypermethylation at tumour suppressor loci.
 
 ---
 
 ## References
 
-Lin I-H et al. (2015). *Hierarchical Clustering of Breast Cancer Methylomes Revealed Differentially Methylated and Expressed Breast Cancer Genes.* PLOS ONE. https://doi.org/10.1371/journal.pone.0118453
-
-Galaxy Training Network. *DNA Methylation data analysis.* https://training.galaxyproject.org/training-material/topics/epigenetics/tutorials/methylation-seq/tutorial.html
-
-Galaxy Training Network. *Introduction to DNA Methylation.* https://training.galaxyproject.org/training-material/topics/epigenetics/tutorials/introduction-dna-methylation/slides-plain.html
-
-Krueger F, Andrews SR. (2011). *Bismark: a flexible aligner and methylation caller for Bisulfite-Seq applications.* Bioinformatics. https://doi.org/10.1093/bioinformatics/btr167
-
-Yin et al. (2019). *MethylDackel.* https://github.com/dpryan79/MethylDackel
+- Lin, I.-H. et al. (2015). Hierarchical Clustering of Breast Cancer Methylomes Revealed Differentially Methylated and Expressed Breast Cancer Genes. *PLOS ONE*, 10(2), e0118453. https://doi.org/10.1371/journal.pone.0118453
+- Galaxy Training Network. DNA Methylation data analysis. https://training.galaxyproject.org/training-material/topics/epigenetics/tutorials/methylation-seq/tutorial.html
+- Galaxy Europe: https://usegalaxy.eu
 
